@@ -120,7 +120,6 @@ export function handleHistory(ctx: CommandContext, args: string): CommandResult 
 export function handleReset(ctx: CommandContext): CommandResult {
   const newSession = ctx.clearSession();
   newSession.workingDirectory = process.cwd();
-  newSession.model = undefined;
   Object.assign(ctx.session, newSession);
   return { reply: '✅ 会话已完全重置，所有设置恢复默认。', handled: true };
 }
