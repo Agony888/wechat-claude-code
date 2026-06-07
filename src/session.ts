@@ -12,7 +12,7 @@ function validateAccountId(accountId: string): void {
   }
 }
 
-export type SessionState = 'idle' | 'processing' | 'waiting_permission';
+export type SessionState = 'idle' | 'processing';
 
 export interface ChatMessage {
   role: 'user' | 'assistant';
@@ -25,17 +25,9 @@ export interface Session {
   previousSdkSessionId?: string;
   workingDirectory: string;
   model?: string;
-  permissionMode?: 'default' | 'acceptEdits' | 'plan' | 'auto';
   state: SessionState;
   chatHistory: ChatMessage[];
   maxHistoryLength?: number;
-}
-
-export interface PendingPermission {
-  toolName: string;
-  toolInput: string;
-  resolve: (allowed: boolean) => void;
-  timer: NodeJS.Timeout;
 }
 
 const DEFAULT_MAX_HISTORY = 100;
@@ -84,7 +76,6 @@ export function createSessionStore() {
       previousSdkSessionId: undefined,
       workingDirectory: currentSession?.workingDirectory ?? process.cwd(),
       model: currentSession?.model,
-      permissionMode: currentSession?.permissionMode,
       state: 'idle',
       chatHistory: [],
       maxHistoryLength: currentSession?.maxHistoryLength || DEFAULT_MAX_HISTORY,

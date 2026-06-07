@@ -11,7 +11,6 @@ import { createMonitor, type MonitorCallbacks } from './wechat/monitor.js';
 import { createSender } from './wechat/send.js';
 import { downloadImage, extractText, extractFirstImageUrl } from './wechat/media.js';
 import { createSessionStore, type Session } from './session.js';
-import { createPermissionBroker } from './permission.js';
 import { routeCommand, type CommandContext, type CommandResult } from './commands/router.js';
 import { claudeQuery, type QueryOptions } from './claude/provider.js';
 import { loadConfig, saveConfig } from './config.js';
@@ -184,19 +183,12 @@ async function runDaemon(): Promise<void> {
   const sender = createSender(api, account.accountId);
   const sharedCtx = { lastContextToken: '' };
   const activeControllers = new Map<string, AbortController>();
-  const permissionBroker = createPermissionBroker(async () => {
-    try {
-      await sender.sendText(account.userId ?? '', sharedCtx.lastContextToken, '⏰ 权限请求超时，已自动拒绝。');
-    } catch {
-      logger.warn('Failed to send permission timeout message');
-    }
-  });
 
   // -- Wire the monitor callbacks --
 
   const callbacks: MonitorCallbacks = {
     onMessage: async (msg: WeixinMessage) => {
-      await handleMessage(msg, account, session, sessionStore, permissionBroker, sender, config, sharedCtx, activeControllers);
+      await handleMessage(msg, account, session, sessionStore, sender, config, sharedCtx, activeControllers);
     },
     onSessionExpired: () => {
       logger.warn('Session expired, will keep retrying...');
@@ -232,7 +224,6 @@ async function handleMessage(
   account: AccountData,
   session: Session,
   sessionStore: ReturnType<typeof createSessionStore>,
-  permissionBroker: ReturnType<typeof createPermissionBroker>,
   sender: ReturnType<typeof createSender>,
   config: ReturnType<typeof loadConfig>,
   sharedCtx: { lastContextToken: string },
@@ -253,58 +244,18 @@ async function handleMessage(
   // Concurrency guard: abort current query when new message arrives
   if (session.state === 'processing') {
     if (userText.startsWith('/clear')) {
-      // Force reset stuck session state
       const ctrl = activeControllers.get(account.accountId);
       if (ctrl) { ctrl.abort(); activeControllers.delete(account.accountId); }
       session.state = 'idle';
       sessionStore.save(account.accountId, session);
-      // Fall through to command routing so /clear executes normally
     } else if (!userText.startsWith('/')) {
-      // Abort the current query and process the new message instead
       const ctrl = activeControllers.get(account.accountId);
       if (ctrl) { ctrl.abort(); activeControllers.delete(account.accountId); }
       session.state = 'idle';
       sessionStore.save(account.accountId, session);
-      // Fall through to send new message to Claude
     } else if (!userText.startsWith('/status') && !userText.startsWith('/help')) {
       return;
     }
-  }
-
-  // -- Grace period: catch late y/n after timeout --
-
-  if (session.state === 'idle' && permissionBroker.isTimedOut(account.accountId)) {
-    const lower = userText.toLowerCase();
-    if (lower === 'y' || lower === 'yes' || lower === 'n' || lower === 'no') {
-      permissionBroker.clearTimedOut(account.accountId);
-      await sender.sendText(fromUserId, contextToken, '⏰ 权限请求已超时，请重新发送你的请求。');
-      return;
-    }
-  }
-
-  // -- Permission state handling --
-
-  if (session.state === 'waiting_permission') {
-    // Check if there's actually a pending permission (may be lost after restart)
-    const pendingPerm = permissionBroker.getPending(account.accountId);
-    if (!pendingPerm) {
-      session.state = 'idle';
-      sessionStore.save(account.accountId, session);
-      await sender.sendText(fromUserId, contextToken, '⚠️ 权限请求已失效（可能因服务重启），请重新发送你的请求。');
-      return;
-    }
-
-    const lower = userText.toLowerCase();
-    if (lower === 'y' || lower === 'yes') {
-      const resolved = permissionBroker.resolvePermission(account.accountId, true);
-      await sender.sendText(fromUserId, contextToken, resolved ? '✅ 已允许' : '⚠️ 权限请求处理失败，可能已超时');
-    } else if (lower === 'n' || lower === 'no') {
-      const resolved = permissionBroker.resolvePermission(account.accountId, false);
-      await sender.sendText(fromUserId, contextToken, resolved ? '❌ 已拒绝' : '⚠️ 权限请求处理失败，可能已超时');
-    } else {
-      await sender.sendText(fromUserId, contextToken, '正在等待权限审批，请回复 y 或 n。');
-    }
-    return;
   }
 
   // -- Command routing --
@@ -321,7 +272,6 @@ async function handleMessage(
       updateSession,
       clearSession: () => sessionStore.clear(account.accountId),
       getChatHistoryText: (limit?: number) => sessionStore.getChatHistoryText(session, limit),
-      rejectPendingPermission: () => permissionBroker.rejectPending(account.accountId),
       text: userText,
     };
 
@@ -333,27 +283,14 @@ async function handleMessage(
     }
 
     if (result.handled && result.claudePrompt) {
-      // Fall through to send the claudePrompt to Claude
       await sendToClaude(
-        result.claudePrompt,
-        imageItem,
-        fromUserId,
-        contextToken,
-        account,
-        session,
-        sessionStore,
-        permissionBroker,
-        sender,
-        config,
-        activeControllers,
+        result.claudePrompt, imageItem, fromUserId, contextToken,
+        account, session, sessionStore, sender, config, activeControllers,
       );
       return;
     }
 
-    if (result.handled) {
-      // Handled but no reply and no claudePrompt (shouldn't normally happen)
-      return;
-    }
+    if (result.handled) return;
 
     // Not handled, treat as normal message (fall through)
   }
@@ -366,17 +303,8 @@ async function handleMessage(
   }
 
   await sendToClaude(
-    userText,
-    imageItem,
-    fromUserId,
-    contextToken,
-    account,
-    session,
-    sessionStore,
-    permissionBroker,
-    sender,
-    config,
-    activeControllers,
+    userText, imageItem, fromUserId, contextToken,
+    account, session, sessionStore, sender, config, activeControllers,
   );
 }
 
@@ -392,7 +320,6 @@ async function sendToClaude(
   account: AccountData,
   session: Session,
   sessionStore: ReturnType<typeof createSessionStore>,
-  permissionBroker: ReturnType<typeof createPermissionBroker>,
   sender: ReturnType<typeof createSender>,
   config: ReturnType<typeof loadConfig>,
   activeControllers: Map<string, AbortController>,
@@ -414,7 +341,6 @@ async function sendToClaude(
     if (imageItem) {
       const base64DataUri = await downloadImage(imageItem);
       if (base64DataUri) {
-        // Convert data URI to the format Claude expects
         const matches = base64DataUri.match(/^data:([^;]+);base64,(.+)$/);
         if (matches) {
           images = [
@@ -431,19 +357,12 @@ async function sendToClaude(
       }
     }
 
-    const effectivePermissionMode = session.permissionMode ?? config.permissionMode;
-    const isAutoPermission = effectivePermissionMode === 'auto';
-
-    // Map 'auto' to bypassPermissions — skips all permission checks in the SDK
-    const sdkPermissionMode = isAutoPermission ? 'bypassPermissions' : effectivePermissionMode;
-
     // Unified buffer: text deltas and tool summaries all go here
     let pendingBuffer = '';
     let anySent = false;
-    let lastSendTime = Date.now(); // start the clock now, so first delta doesn't fire immediately
+    let lastSendTime = Date.now();
     const SEND_INTERVAL_MS = 36_000;
 
-    // Send everything in pendingBuffer. force=true ignores rate limit.
     async function trySend(force = false): Promise<void> {
       if (!pendingBuffer.trim()) return;
       const now = Date.now();
@@ -464,7 +383,6 @@ async function sendToClaude(
       resume: session.sdkSessionId,
       model: session.model,
       systemPrompt: config.systemPrompt,
-      permissionMode: sdkPermissionMode,
       abortController,
       images,
       onText: async (delta: string) => {
@@ -475,35 +393,6 @@ async function sendToClaude(
         pendingBuffer += (pendingBuffer ? '\n' : '') + summary;
         await trySend();
       },
-      onPermissionRequest: isAutoPermission
-        ? async () => true  // auto-approve all tools, skip broker
-        : async (toolName: string, toolInput: string) => {
-            // Set state to waiting_permission
-            session.state = 'waiting_permission';
-            sessionStore.save(account.accountId, session);
-
-            // Create pending permission
-            const permissionPromise = permissionBroker.createPending(
-              account.accountId,
-              toolName,
-              toolInput,
-            );
-
-            // Send permission message to WeChat
-            const perm = permissionBroker.getPending(account.accountId);
-            if (perm) {
-              const permMsg = permissionBroker.formatPendingMessage(perm);
-              await sender.sendText(fromUserId, contextToken, permMsg);
-            }
-
-            const allowed = await permissionPromise;
-
-            // Reset state after permission resolved
-            session.state = 'processing';
-            sessionStore.save(account.accountId, session);
-
-            return allowed;
-          },
     };
 
     let result = await claudeQuery(queryOptions);

@@ -19,7 +19,6 @@ const HELP_TEXT = `可用命令：
 配置：
   /cwd [路径]       查看或切换工作目录
   /model [名称]     查看或切换 Claude 模型
-  /permission [模式] 查看或切换权限模式
   /prompt [内容]    查看或设置系统提示词（全局生效）
 
 其他：
@@ -53,8 +52,6 @@ export function handleHelp(_args: string): CommandResult {
 }
 
 export function handleClear(ctx: CommandContext): CommandResult {
-  // Reject any pending permission to avoid orphaned promise corrupting new session
-  ctx.rejectPendingPermission?.();
   const newSession = ctx.clearSession();
   Object.assign(ctx.session, newSession);
   return { reply: '✅ 会话已清除，下次消息将开始新会话。', handled: true };
@@ -76,48 +73,13 @@ export function handleModel(ctx: CommandContext, args: string): CommandResult {
   return { reply: `✅ 模型已切换为: ${args}`, handled: true };
 }
 
-const PERMISSION_MODES = ['default', 'acceptEdits', 'plan', 'auto'] as const;
-const PERMISSION_DESCRIPTIONS: Record<string, string> = {
-  default: '每次工具使用需手动审批',
-  acceptEdits: '自动批准文件编辑，其他需审批',
-  plan: '只读模式，不允许任何工具',
-  auto: '自动批准所有工具（危险模式）',
-};
-
-export function handlePermission(ctx: CommandContext, args: string): CommandResult {
-  if (!args) {
-    const current = ctx.session.permissionMode ?? 'default';
-    const lines = [
-      '🔒 当前权限模式: ' + current,
-      '',
-      '可用模式:',
-      ...PERMISSION_MODES.map(m => `  ${m} — ${PERMISSION_DESCRIPTIONS[m]}`),
-      '',
-      '用法: /permission <模式>',
-    ];
-    return { reply: lines.join('\n'), handled: true };
-  }
-  const mode = args.trim();
-  if (!PERMISSION_MODES.includes(mode as any)) {
-    return {
-      reply: `未知模式: ${mode}\n可用: ${PERMISSION_MODES.join(', ')}`,
-      handled: true,
-    };
-  }
-  ctx.updateSession({ permissionMode: mode as any });
-  const warning = mode === 'auto' ? '\n\n⚠️ 已开启危险模式：所有工具调用将自动批准，无需手动确认。' : '';
-  return { reply: `✅ 权限模式已切换为: ${mode}\n${PERMISSION_DESCRIPTIONS[mode]}${warning}`, handled: true };
-}
-
 export function handleStatus(ctx: CommandContext): CommandResult {
   const s = ctx.session;
-  const mode = s.permissionMode ?? 'default';
   const lines = [
     '📊 会话状态',
     '',
     `工作目录: ${s.workingDirectory}`,
     `模型: ${s.model ?? '默认'}`,
-    `权限模式: ${mode}`,
     `会话ID: ${s.sdkSessionId ?? '无'}`,
     `状态: ${s.state}`,
   ];
@@ -156,11 +118,9 @@ export function handleHistory(ctx: CommandContext, args: string): CommandResult 
 
 /** 完全重置会话（包括工作目录等设置） */
 export function handleReset(ctx: CommandContext): CommandResult {
-  ctx.rejectPendingPermission?.();
   const newSession = ctx.clearSession();
   newSession.workingDirectory = process.cwd();
   newSession.model = undefined;
-  newSession.permissionMode = undefined;
   Object.assign(ctx.session, newSession);
   return { reply: '✅ 会话已完全重置，所有设置恢复默认。', handled: true };
 }

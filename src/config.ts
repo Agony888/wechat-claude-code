@@ -5,7 +5,6 @@ import { homedir } from "node:os";
 export interface Config {
   workingDirectory: string;
   model?: string;
-  permissionMode?: "default" | "acceptEdits" | "plan" | "auto";
   systemPrompt?: string;
 }
 
@@ -36,16 +35,6 @@ function parseConfigFile(content: string): Config {
       case "model":
         config.model = value;
         break;
-      case "permissionMode":
-        if (
-          value === "default" ||
-          value === "acceptEdits" ||
-          value === "plan" ||
-          value === "auto"
-        ) {
-          config.permissionMode = value;
-        }
-        break;
       case "systemPrompt":
         config.systemPrompt = value;
         break;
@@ -70,9 +59,6 @@ export function saveConfig(config: Config): void {
   lines.push(`workingDirectory=${config.workingDirectory}`);
   if (config.model) {
     lines.push(`model=${config.model}`);
-  }
-  if (config.permissionMode) {
-    lines.push(`permissionMode=${config.permissionMode}`);
   }
   if (config.systemPrompt) {
     lines.push(`systemPrompt=${config.systemPrompt}`);

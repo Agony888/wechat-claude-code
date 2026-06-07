@@ -2,7 +2,7 @@
 
 **English** | [中文](README_zh.md)
 
-A [Claude Code](https://claude.ai/claude-code) Skill that bridges personal WeChat to your local Claude Code. Chat with Claude from your phone via WeChat — text, images, permission approvals, slash commands, all supported.
+A [Claude Code](https://claude.ai/claude-code) Skill that bridges personal WeChat to your local Claude Code. Chat with Claude from your phone via WeChat — text, images, slash commands, all supported.
 
 ## Features
 
@@ -10,9 +10,9 @@ A [Claude Code](https://claude.ai/claude-code) Skill that bridges personal WeCha
 - **Thinking preview** — get a 💭 preview of Claude's reasoning before each tool call
 - **Interrupt support** — send a new message mid-query to abort and redirect Claude
 - **System prompt** — set a persistent prompt via `/prompt` (e.g. "Reply in Chinese")
+- **Auto-approved tool access** — all tools run without manual approval for seamless operation
 - Text conversation with Claude Code through WeChat
 - Image recognition — send photos for Claude to analyze
-- Permission approval — reply `y`/`n` in WeChat to approve Claude's tool use
 - Slash commands — `/help`, `/clear`, `/model`, `/prompt`, `/status`, `/skills`, and more
 - Launch any installed Claude Code skill from WeChat
 - Cross-platform — macOS (launchd), Linux (systemd + nohup fallback)
@@ -82,7 +82,6 @@ npm run daemon -- logs     # View recent logs
 | `/clear` | Clear current session (start fresh) |
 | `/reset` | Full reset including working directory |
 | `/model <name>` | Switch Claude model |
-| `/permission <mode>` | Switch permission mode |
 | `/prompt [text]` | View or set a system prompt appended to every query |
 | `/status` | View current session state |
 | `/cwd [path]` | View or switch working directory |
@@ -91,23 +90,6 @@ npm run daemon -- logs     # View recent logs
 | `/compact` | Start a new SDK session (clear token context) |
 | `/undo [n]` | Remove last N messages from history |
 | `/<skill> [args]` | Trigger any installed skill |
-
-## Permission Approval
-
-When Claude requests to execute a tool, you'll receive a permission request in WeChat:
-
-- Reply `y` or `yes` to allow
-- Reply `n` or `no` to deny
-- No response within 120 seconds = auto-deny
-
-You can switch permission mode with `/permission <mode>`:
-
-| Mode | Description |
-|------|-------------|
-| `default` | Manual approval for each tool use |
-| `acceptEdits` | Auto-approve file edits, other tools need approval |
-| `plan` | Read-only mode, no tools allowed |
-| `auto` | Auto-approve all tools (dangerous mode) |
 
 ## How It Works
 
@@ -128,7 +110,7 @@ All data is stored in `~/.wechat-claude-code/`:
 ```
 ~/.wechat-claude-code/
 ├── accounts/       # WeChat account credentials (one JSON per account)
-├── config.env      # Global config (working directory, model, permission mode, system prompt)
+├── config.env      # Global config (working directory, model, system prompt)
 ├── sessions/       # Session data (one JSON per account)
 ├── get_updates_buf # Message polling sync buffer
 └── logs/           # Rotating logs (daily, 30-day retention)

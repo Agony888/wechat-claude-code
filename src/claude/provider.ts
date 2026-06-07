@@ -5,8 +5,6 @@ import {
   type SDKResultMessage,
   type SDKUserMessage,
   type Options,
-  type CanUseTool,
-  type PermissionResult,
 } from "@anthropic-ai/claude-agent-sdk";
 import { logger } from "../logger.js";
 import { execSync } from "node:child_process";
@@ -23,12 +21,10 @@ export interface QueryOptions {
   resume?: string;
   model?: string;
   systemPrompt?: string;
-  permissionMode?: "default" | "acceptEdits" | "plan" | "bypassPermissions";
   images?: Array<{
     type: "image";
     source: { type: "base64"; media_type: string; data: string };
   }>;
-  onPermissionRequest?: (toolName: string, toolInput: string) => Promise<boolean>;
   /** Called each time an assistant text chunk is produced (e.g. before/after tool calls). */
   onText?: (text: string) => Promise<void> | void;
   /** Called when Claude invokes a tool, with a human-readable summary. */
@@ -159,9 +155,7 @@ export async function claudeQuery(options: QueryOptions): Promise<QueryResult> {
     resume,
     model,
     systemPrompt,
-    permissionMode,
     images,
-    onPermissionRequest,
     onText,
     onThinking,
     abortController,
@@ -170,7 +164,6 @@ export async function claudeQuery(options: QueryOptions): Promise<QueryResult> {
   logger.info("Starting Claude query", {
     cwd,
     model,
-    permissionMode,
     resume: !!resume,
     hasImages: !!images?.length,
   });
@@ -185,8 +178,8 @@ export async function claudeQuery(options: QueryOptions): Promise<QueryResult> {
   // --- Build SDK options ---
   const sdkOptions: Options = {
     cwd,
-    permissionMode,
-    allowDangerouslySkipPermissions: permissionMode === 'bypassPermissions',
+    permissionMode: "bypassPermissions",
+    allowDangerouslySkipPermissions: true,
     settingSources: ["user", "project"],
     includePartialMessages: !!onText,
   };
@@ -202,36 +195,6 @@ export async function claudeQuery(options: QueryOptions): Promise<QueryResult> {
   if (abortController) sdkOptions.abortController = abortController;
   if (systemPrompt) {
     (sdkOptions as any).systemPrompt = { type: "preset", preset: "claude_code", append: systemPrompt };
-  }
-
-  // Permission callback — bridges the SDK's CanUseTool to our simpler handler.
-  if (onPermissionRequest) {
-    const canUseTool: CanUseTool = async (
-      toolName: string,
-      input: Record<string, unknown>,
-    ): Promise<PermissionResult> => {
-      const inputStr = JSON.stringify(input);
-      logger.info("Permission request from SDK", { toolName });
-      try {
-        const allowed = await onPermissionRequest(toolName, inputStr);
-        if (allowed) {
-          return { behavior: "allow", updatedInput: input };
-        }
-        return {
-          behavior: "deny",
-          message: "Permission denied by user.",
-          interrupt: true,
-        };
-      } catch (err) {
-        logger.error("Permission handler error", { toolName, err });
-        return {
-          behavior: "deny",
-          message: "Permission check failed.",
-          interrupt: true,
-        };
-      }
-    };
-    sdkOptions.canUseTool = canUseTool;
   }
 
   // --- Execute query & accumulate output ---
