@@ -1,6 +1,6 @@
 ---
 name: wechat-claude-code
-description: 微信消息桥接 - 在微信中与 Claude Code 聊天。支持文字对话、图片识别、权限审批、斜杠命令。
+description: 微信消息桥接 - 在微信中与 Claude Code 聊天。支持文字对话、图片识别、实时进度推送、斜杠命令。
 ---
 
 # WeChat Claude Code Bridge
@@ -84,6 +84,8 @@ cd ~/.claude/skills/wechat-claude-code && npm run daemon -- status
   /clear   清除当前会话，开始新对话
   /status  查看当前会话状态
   /model   切换 Claude 模型
+  /prompt  设置系统提示词
+  /cwd     切换工作目录
   /skills  查看已安装的 skill
 ```
 
@@ -102,13 +104,6 @@ cd ~/.claude/skills/wechat-claude-code && npm run daemon -- status
 | status | `npm run daemon -- status` | 查看运行状态 |
 | logs | `npm run daemon -- logs` | 查看最近日志（tail -100） |
 
-## 权限审批
-
-当 Claude 请求执行工具时，微信会收到权限请求消息：
-- 回复 `y` 或 `yes` 允许
-- 回复 `n` 或 `no` 拒绝
-- 60 秒未回复自动拒绝并通知
-
 ## 数据目录
 
 所有数据存储在 `~/.wechat-claude-code/`：
@@ -116,7 +111,7 @@ cd ~/.claude/skills/wechat-claude-code && npm run daemon -- status
 ```
 ~/.wechat-claude-code/
 ├── accounts/       # 绑定的微信账号数据（每个账号一个 JSON）
-├── config.env      # 全局配置（工作目录、模型、权限模式）
+├── config.env      # 全局配置（工作目录、模型、系统提示词）
 ├── sessions/       # 会话数据（每个账号一个 JSON）
 ├── get_updates_buf # 消息轮询同步缓冲
 └── logs/           # 运行日志（每日轮转，保留 30 天）
