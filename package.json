@@ -14,8 +14,7 @@
     "daemon": "bash scripts/daemon.sh"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.1.0",
-    "qrcode": "^1.5.4",
+"qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0"
   },
   "devDependencies": {

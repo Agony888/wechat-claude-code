@@ -1,15 +1,9 @@
-import {
-  query,
-  type SDKMessage,
-  type SDKAssistantMessage,
-  type SDKResultMessage,
-  type SDKUserMessage,
-  type Options,
-} from "@anthropic-ai/claude-agent-sdk";
-import { logger } from "../logger.js";
-import { execSync } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { spawn, type ChildProcess } from 'node:child_process';
+import { writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { createInterface } from 'node:readline';
+import { logger } from '../logger.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -41,93 +35,26 @@ export interface QueryResult {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Extract accumulated text from an SDK assistant message's content blocks.
- */
-function extractText(msg: SDKAssistantMessage): string {
-  const content = msg.message?.content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .filter((block: any) => block.type === "text")
-    .map((block: any) => (block.text as string) ?? "")
-    .join("");
-}
+const TEMP_DIR = join(tmpdir(), 'wechat-claude-code');
 
-/**
- * Extract session_id from any SDKMessage that carries one.
- */
-function getSessionId(msg: SDKMessage): string | undefined {
-  if ("session_id" in msg) {
-    return (msg as { session_id: string }).session_id;
+function saveImageTemp(images: NonNullable<QueryOptions['images']>): string[] {
+  mkdirSync(TEMP_DIR, { recursive: true });
+  const paths: string[] = [];
+  for (const img of images) {
+    const ext = img.source.media_type.split('/')[1] || 'png';
+    const fileName = `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+    const filePath = join(TEMP_DIR, fileName);
+    writeFileSync(filePath, Buffer.from(img.source.data, 'base64'));
+    paths.push(filePath);
   }
-  return undefined;
+  return paths;
 }
 
-/**
- * Build an async iterable yielding a single SDKUserMessage with optional
- * image content blocks.  The session_id is set to "" — the SDK assigns the
- * real session id once the process starts.
- */
-async function* singleUserMessage(
-  text: string,
-  images?: QueryOptions["images"],
-): AsyncGenerator<SDKUserMessage, void, unknown> {
-  const contentBlocks: Array<{
-    type: string;
-    text?: string;
-    source?: { type: "base64"; media_type: string; data: string };
-  }> = [{ type: "text", text }];
-
-  if (images?.length) {
-    for (const img of images) {
-      contentBlocks.push({ type: "image", source: img.source });
-    }
+function cleanupTempFiles(paths: string[]): void {
+  for (const p of paths) {
+    try { unlinkSync(p); } catch { /* ignore */ }
   }
-
-  const msg: SDKUserMessage = {
-    type: "user",
-    session_id: "",
-    parent_tool_use_id: null,
-    message: {
-      role: "user",
-      content: contentBlocks,
-    },
-  };
-
-  yield msg;
 }
-
-// ---------------------------------------------------------------------------
-// Resolve global claude cli.js path (avoids bundled old version in SDK)
-// ---------------------------------------------------------------------------
-
-function resolveGlobalClaudeCliPath(): string | undefined {
-  try {
-    const claudeBin = execSync("which claude", { encoding: "utf8" }).trim();
-    if (!claudeBin) return undefined;
-    // Resolve symlinks safely via fs.realpathSync instead of shell interpolation
-    let realBin: string;
-    try {
-      realBin = realpathSync(claudeBin);
-    } catch {
-      realBin = claudeBin;
-    }
-    // On npm global installs, the binary itself is cli.js
-    if (realBin.endsWith(".js") && existsSync(realBin)) return realBin;
-    // Otherwise look for cli.js next to the binary
-    const cliJs = join(dirname(realBin), "cli.js");
-    if (existsSync(cliJs)) return cliJs;
-    // Try npm global prefix
-    const npmPrefix = execSync("npm config get prefix", { encoding: "utf8" }).trim();
-    const npmCli = join(npmPrefix, "lib", "node_modules", "@anthropic-ai", "claude-code", "cli.js");
-    if (existsSync(npmCli)) return npmCli;
-  } catch {
-    // ignore
-  }
-  return undefined;
-}
-
-const GLOBAL_CLAUDE_CLI_PATH = resolveGlobalClaudeCliPath();
 
 // ---------------------------------------------------------------------------
 // Core function
@@ -145,137 +72,189 @@ export async function claudeQuery(options: QueryOptions): Promise<QueryResult> {
     abortController,
   } = options;
 
-  logger.info("Starting Claude query", {
+  logger.info("Starting Claude CLI query", {
     cwd,
     model,
     resume: !!resume,
     hasImages: !!images?.length,
   });
 
-  // When images are present we use the multi-content AsyncIterable path;
-  // otherwise a plain string is simpler and sufficient.
-  const hasImages = images && images.length > 0;
-  const promptParam: string | AsyncIterable<SDKUserMessage> = hasImages
-    ? singleUserMessage(prompt, images)
-    : prompt;
+  // Build CLI arguments
+  const args: string[] = [
+    '-p', '-',
+    '--output-format', 'stream-json',
+    '--verbose',
+    '--include-partial-messages',
+    '--dangerously-skip-permissions',
+  ];
 
-  // --- Build SDK options ---
-  const sdkOptions: Options = {
-    cwd,
-    permissionMode: "bypassPermissions",
-    allowDangerouslySkipPermissions: true,
-    settingSources: ["user", "project"],
-    includePartialMessages: !!onText,
-  };
+  if (resume) args.push('--resume', resume);
+  if (model) args.push('--model', model);
+  if (systemPrompt) args.push('--append-system-prompt', systemPrompt);
 
-  // Use the globally installed claude cli.js to avoid version mismatch with the bundled one
-  if (GLOBAL_CLAUDE_CLI_PATH) {
-    (sdkOptions as any).pathToClaudeCodeExecutable = GLOBAL_CLAUDE_CLI_PATH;
-    logger.debug("Using global claude cli.js", { path: GLOBAL_CLAUDE_CLI_PATH });
+  // Handle images: save to temp files and append paths to prompt
+  const tempImagePaths = images?.length ? saveImageTemp(images) : [];
+  let fullPrompt = prompt;
+  if (tempImagePaths.length > 0) {
+    const imageLines = tempImagePaths.map(p => `\n![image](file://${p})`).join('');
+    fullPrompt += imageLines;
   }
 
-  if (model) sdkOptions.model = model;
-  if (resume) sdkOptions.resume = resume;
-  if (abortController) sdkOptions.abortController = abortController;
-  if (systemPrompt) {
-    (sdkOptions as any).systemPrompt = { type: "preset", preset: "claude_code", append: systemPrompt };
-  }
-
-  // --- Execute query & accumulate output ---
-  let sessionId = "";
+  // Accumulators
+  let sessionId = '';
   const textParts: string[] = [];
   let errorMessage: string | undefined;
+  let child: ChildProcess | undefined;
+  let settled = false;
 
-  const QUERY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+  const QUERY_TIMEOUT_MS = 5 * 60 * 1000;
 
-  try {
-    const result = query({ prompt: promptParam, options: sdkOptions });
-
-    let timeoutId: ReturnType<typeof setTimeout>;
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      timeoutId = setTimeout(() => reject(new Error('Claude query timed out after 5 minutes')), QUERY_TIMEOUT_MS);
-    });
-
-    const iterateResult = async () => {
-      for await (const message of result) {
-      const sid = getSessionId(message);
-      if (sid) sessionId = sid;
-
-      switch (message.type) {
-        case "assistant": {
-          const aMsg = message as SDKAssistantMessage;
-          const text = extractText(aMsg);
-          if (text) {
-            textParts.push(text);
-          }
-          break;
-        }
-        case "stream_event": {
-          const evt = (message as any).event;
-          if (evt?.type === "content_block_delta") {
-            const deltaType: string = evt.delta?.type ?? "";
-            if (deltaType === "text_delta" && onText) {
-              const delta: string = evt.delta.text;
-              if (delta) await onText(delta);
-            }
-          }
-          break;
-        }
-        case "result": {
-          const rm = message as SDKResultMessage;
-          if (rm.subtype === "success" && "result" in rm) {
-            // The SDK result message carries the final result string.
-            // Append only when it adds content not yet seen.
-            if (rm.result) {
-              const combined = textParts.join("");
-              if (!combined.includes(rm.result)) {
-                textParts.push(rm.result);
-              }
-            }
-          } else if ("errors" in rm && rm.errors.length > 0) {
-            errorMessage = rm.errors.join("; ");
-            logger.error("SDK returned error result", { errors: rm.errors });
-          }
-          break;
-        }
-        case "system": {
-          logger.debug("SDK system message", {
-            subtype: (message as { subtype?: string }).subtype,
-          });
-          break;
-        }
-        default:
-          // tool_progress, auth_status, etc. — ignore
-          break;
-      }
-    }
+  return new Promise<QueryResult>((resolve) => {
+    const finish = (result: QueryResult) => {
+      if (settled) return;
+      settled = true;
+      cleanupTempFiles(tempImagePaths);
+      resolve(result);
     };
 
     try {
-      await Promise.race([iterateResult(), timeoutPromise]);
-    } finally {
-      clearTimeout(timeoutId!);
+      child = spawn('claude', args, {
+        cwd,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: { ...process.env },
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      finish({ text: '', sessionId: '', error: `Failed to spawn claude: ${msg}` });
+      return;
     }
-  } catch (err: unknown) {
-    errorMessage = err instanceof Error ? err.message : String(err);
-    logger.error("Claude query threw", { error: errorMessage });
-  }
 
-  const fullText = textParts.join("\n").trim();
+    // Write prompt to stdin and close
+    child.stdin!.write(fullPrompt);
+    child.stdin!.end();
 
-  if (!fullText && !errorMessage) {
-    errorMessage = "Claude returned an empty response.";
-  }
+    // Timeout
+    const timeoutId = setTimeout(() => {
+      logger.warn('Claude CLI query timed out, killing process');
+      child!.kill('SIGTERM');
+      const partialText = textParts.join('\n').trim();
+      finish({
+        text: partialText,
+        sessionId,
+        error: partialText ? undefined : 'Claude query timed out after 5 minutes',
+      });
+    }, QUERY_TIMEOUT_MS);
 
-  logger.info("Claude query completed", {
-    sessionId,
-    textLength: fullText.length,
-    hasError: !!errorMessage,
+    // Abort handling
+    const onAbort = () => {
+      logger.info('Claude CLI query aborted');
+      child!.kill('SIGTERM');
+      const partialText = textParts.join('\n').trim();
+      finish({ text: partialText, sessionId });
+    };
+    abortController?.signal.addEventListener('abort', onAbort, { once: true });
+
+    // Collect stderr
+    const stderrParts: string[] = [];
+    child.stderr!.setEncoding('utf8');
+    child.stderr!.on('data', (chunk: string) => {
+      stderrParts.push(chunk);
+    });
+
+    // Parse NDJSON from stdout
+    const rl = createInterface({ input: child.stdout! });
+    rl.on('line', (line: string) => {
+      if (!line.trim()) return;
+      let obj: any;
+      try {
+        obj = JSON.parse(line);
+      } catch {
+        // Skip unparseable lines
+        return;
+      }
+
+      switch (obj.type) {
+        case 'system': {
+          if (obj.subtype === 'init' && obj.session_id) {
+            sessionId = obj.session_id;
+          }
+          break;
+        }
+        case 'assistant': {
+          const content = obj.message?.content;
+          if (Array.isArray(content)) {
+            const text = content
+              .filter((b: any) => b.type === 'text')
+              .map((b: any) => b.text ?? '')
+              .join('');
+            if (text) textParts.push(text);
+          }
+          break;
+        }
+        case 'stream_event': {
+          const evt = obj.event;
+          if (evt?.type === 'content_block_delta' && evt.delta?.type === 'text_delta') {
+            const delta: string = evt.delta.text;
+            if (delta && onText) {
+              // Fire and forget — avoid blocking the readline loop
+              Promise.resolve(onText(delta)).catch(() => {});
+            }
+          }
+          break;
+        }
+        case 'result': {
+          if (obj.result && typeof obj.result === 'string') {
+            const combined = textParts.join('');
+            if (!combined.includes(obj.result)) {
+              textParts.push(obj.result);
+            }
+          }
+          if (obj.subtype === 'error' || (obj.errors && obj.errors.length > 0)) {
+            const errors = obj.errors ?? [obj.error_message ?? 'Unknown error'];
+            errorMessage = Array.isArray(errors) ? errors.join('; ') : String(errors);
+            logger.error('CLI returned error result', { errors });
+          }
+          break;
+        }
+        default:
+          break;
+      }
+    });
+
+    // Handle process exit
+    child.on('close', (code: number | null) => {
+      clearTimeout(timeoutId);
+      abortController?.signal.removeEventListener('abort', onAbort);
+
+      if (code !== 0 && code !== null && !textParts.length && !errorMessage) {
+        const stderr = stderrParts.join('').trim();
+        errorMessage = stderr || `claude exited with code ${code}`;
+        logger.error('Claude CLI exited with error', { code, stderr: stderr.slice(0, 500) });
+      }
+
+      const fullText = textParts.join('\n').trim();
+
+      if (!fullText && !errorMessage) {
+        errorMessage = 'Claude returned an empty response.';
+      }
+
+      logger.info("Claude CLI query completed", {
+        sessionId,
+        textLength: fullText.length,
+        hasError: !!errorMessage,
+      });
+
+      finish({
+        text: fullText,
+        sessionId,
+        error: errorMessage,
+      });
+    });
+
+    child.on('error', (err: Error) => {
+      clearTimeout(timeoutId);
+      abortController?.signal.removeEventListener('abort', onAbort);
+      finish({ text: '', sessionId, error: `Failed to spawn claude: ${err.message}` });
+    });
   });
-
-  return {
-    text: fullText,
-    sessionId,
-    error: errorMessage,
-  };
 }
