@@ -472,36 +472,34 @@ async function sendToClaude(
 
     let textBuffer = '';
     let anySent = false;
-    let flushing = false;
     let lastSentTime = Date.now();
     let lastBufferChangeTime = Date.now();
 
     const MIN_FLUSH_LEN = 200;
     const SOFT_FLUSH_LIMIT = 1800;
-    const MAX_BUFFER_AGE_MS = 5000;
+    const MAX_BUFFER_AGE_MS = 3000;
 
     /** Check if buffer ends at a structural boundary (double newline or horizontal rule). */
     function endsWithStructuralBoundary(text: string): boolean {
       return /\n\n\s*$/.test(text) || /\n[-*_]{3,}\s*$/.test(text);
     }
 
-    // Send accumulated text output
-    async function flushText(): Promise<void> {
-      if (!textBuffer.trim() || flushing) return;
-      flushing = true;
-      const toSend = textBuffer.trim();
-      textBuffer = '';
-      lastBufferChangeTime = Date.now();
-      try {
+    // Serial promise chain — each flushText() appends to the chain, no flags needed
+    let flushChain: Promise<void> = Promise.resolve();
+
+    function flushText(): void {
+      flushChain = flushChain.then(async () => {
+        const toSend = textBuffer.trim();
+        if (!toSend) return;
+        textBuffer = '';
+        lastBufferChangeTime = Date.now();
         const chunks = splitMessage(toSend);
         for (const chunk of chunks) {
           anySent = true;
           lastSentTime = Date.now();
           await sender.sendText(fromUserId, contextToken, chunk);
         }
-      } finally {
-        flushing = false;
-      }
+      });
     }
 
     // Safety net: flush stale buffers that haven't been sent due to no structural boundary
@@ -536,7 +534,7 @@ async function sendToClaude(
 
         // Flush at structural boundaries or when approaching size limit
         const shouldFlush =
-          (endsWithStructuralBoundary(textBuffer) && textBuffer.length > MIN_FLUSH_LEN)
+          endsWithStructuralBoundary(textBuffer)
           || textBuffer.length > SOFT_FLUSH_LIMIT;
 
         if (shouldFlush) {
