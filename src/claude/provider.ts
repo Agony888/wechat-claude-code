@@ -162,6 +162,9 @@ export async function claudeQuery(options: QueryOptions): Promise<QueryResult> {
     });
 
     // Parse NDJSON from stdout
+    let skillInputAccum = '';
+    let trackingSkill = false;
+
     const rl = createInterface({ input: child.stdout! });
     rl.on('line', (line: string) => {
       if (!line.trim()) return;
@@ -193,12 +196,30 @@ export async function claudeQuery(options: QueryOptions): Promise<QueryResult> {
         }
         case 'stream_event': {
           const evt = obj.event;
-          if (evt?.type === 'content_block_delta' && evt.delta?.type === 'text_delta') {
+          if (evt?.type === 'content_block_start' && evt.content_block?.type === 'tool_use') {
+            if (evt.content_block.name === 'Skill') {
+              trackingSkill = true;
+              skillInputAccum = '';
+            }
+          } else if (evt?.type === 'content_block_delta' && evt.delta?.type === 'text_delta') {
             const delta: string = evt.delta.text;
             if (delta && onText) {
-              // Fire and forget — avoid blocking the readline loop
               Promise.resolve(onText(delta)).catch(() => {});
             }
+          } else if (evt?.type === 'content_block_delta' && evt.delta?.type === 'input_json_delta' && trackingSkill) {
+            skillInputAccum += evt.delta.partial_json ?? '';
+            try {
+              const parsed = JSON.parse(skillInputAccum);
+              if (parsed.skill) {
+                const msg = `\n正在调用 ${parsed.skill}\n`;
+                if (onText) Promise.resolve(onText(msg)).catch(() => {});
+                trackingSkill = false;
+              }
+            } catch {
+              // JSON not complete yet, keep accumulating
+            }
+          } else if (evt?.type === 'content_block_stop') {
+            trackingSkill = false;
           }
           break;
         }
