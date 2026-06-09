@@ -402,6 +402,7 @@ async function sendToClaude(
     let textBuffer = '';
     let anySent = false;
     let flushing = false;
+    let lastSentTime = Date.now();
 
     // Send accumulated text output
     async function flushText(): Promise<void> {
@@ -413,6 +414,7 @@ async function sendToClaude(
         const chunks = splitMessage(toSend);
         for (const chunk of chunks) {
           anySent = true;
+          lastSentTime = Date.now();
           await sender.sendText(fromUserId, contextToken, chunk);
         }
       } finally {
@@ -422,7 +424,16 @@ async function sendToClaude(
 
     // Periodically flush streamed text to WeChat during query
     const FLUSH_INTERVAL_MS = 3000;
-    flushTimer = setInterval(() => { flushText(); }, FLUSH_INTERVAL_MS);
+    const SILENCE_WARNING_MS = 5 * 60 * 1000;
+    let silenceWarned = false;
+    flushTimer = setInterval(() => {
+      flushText();
+      // Send a keepalive if nothing was sent for 5 minutes
+      if (!silenceWarned && Date.now() - lastSentTime > SILENCE_WARNING_MS) {
+        silenceWarned = true;
+        sender.sendText(fromUserId, contextToken, '我还在处理，请稍后').catch(() => {});
+      }
+    }, FLUSH_INTERVAL_MS);
 
     const queryOptions: QueryOptions = {
       prompt,

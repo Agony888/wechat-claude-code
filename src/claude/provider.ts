@@ -107,7 +107,7 @@ export async function claudeQuery(options: QueryOptions): Promise<QueryResult> {
   let child: ChildProcess | undefined;
   let settled = false;
 
-  const QUERY_TIMEOUT_MS = 5 * 60 * 1000;
+  const QUERY_TIMEOUT_MS = 60 * 60 * 1000;
 
   return new Promise<QueryResult>((resolve) => {
     const finish = (result: QueryResult) => {
