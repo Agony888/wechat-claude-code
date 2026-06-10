@@ -50,14 +50,15 @@ function ensureLogDir(): void {
 }
 
 function getLogFilePath(): string {
-  const now = new Date();
+  const now = new Date(Date.now() + 8 * 60 * 60 * 1000);
   const date = now.toISOString().slice(0, 10); // YYYY-MM-DD
   return join(LOG_DIR, `bridge-${date}.log`);
 }
 
 function writeLogLine(level: string, message: string, data?: unknown): void {
   ensureLogDir();
-  const timestamp = new Date().toISOString();
+  const ts = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString();
+  const timestamp = ts.replace('Z', '+08:00');
   const parts = [timestamp, level, message];
   if (data !== undefined) {
     parts.push(redact(data));
