@@ -1,131 +1,142 @@
-# wechat-claude-code
+# WeChat Claude Code Bridge
 
-**English** | [中文](README_zh.md)
+<p align="center">
+  <strong>Chat with Claude Code in WeChat, just like texting a friend</strong>
+</p>
 
-A [Claude Code](https://claude.ai/claude-code) Skill that bridges personal WeChat to your local Claude Code. Chat with Claude from your phone via WeChat — text, images, slash commands, all supported.
+<p align="center">
+  <a href="https://github.com/Wechat-ggGitHub/wechat-claude-code/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="License: MIT"></a>
+  <a href="https://skills.sh/Wechat-ggGitHub/wechat-claude-code"><img src="https://img.shields.io/badge/skills.sh-view_page-blue?style=flat-square" alt="skills.sh"></a>
+  <a href="README_en.md"><img src="https://img.shields.io/badge/Lang-English-lightgrey?style=flat-square" alt="English"></a>
+</p>
 
-## Features
+扫码绑定微信后，你的微信里会多出一个"好友"。给它发消息，消息会自动转发给你电脑上运行的 Claude Code，回复也会实时推送到微信。支持文字、图片、语音、文件的收发。
 
-- **Clean output** — only Claude's text responses are shown in WeChat, tool calls run silently in the background
-- **Typing indicator** — WeChat shows "typing..." while Claude is processing
-- **Interrupt support** — send a new message mid-query to abort and redirect Claude
-- **System prompt** — set a persistent prompt via `/prompt` (e.g. "Reply in Chinese")
-- **Auto-approved tool access** — all tools run without manual approval for seamless operation
-- Text conversation with Claude Code through WeChat
-- Voice messages — speech-to-text automatically via WeChat
-- File support — download, decrypt, and forward files for Claude to read and analyze
-- Image recognition — send photos for Claude to analyze
-- Slash commands — `/help`, `/clear`, `/model`, `/prompt`, `/status`, `/skills`, and more
-- Launch any installed Claude Code skill from WeChat
-- Cross-platform — macOS (launchd), Linux (systemd + nohup fallback)
-- Session persistence — resume conversations across messages
-- Rate-limit safe — proactive per-user send throttling with automatic retry
+---
 
-## Prerequisites
+## 核心亮点
 
-- Node.js >= 18
-- macOS or Linux
-- Personal WeChat account (QR code binding required)
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI installed and authenticated
-  > **Note:** Claude Code supports third-party API providers (e.g. OpenRouter, AWS Bedrock, custom OpenAI-compatible endpoints) — set `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY` accordingly.
+| | |
+|---|---|
+| **扫码即用** | 不用注册账号，不用部署服务器。微信扫码绑定，一分钟搞定。数据全在本地，隐私有保障。 |
+| **消息不刷屏** | 只推送核心信息——进度、结果、关键决策。工具调用、中间过程等噪音自动过滤，阅读体验清爽。 |
+| **"对方正在输入中..."** | Claude 在处理任务时，微信顶部会显示输入状态，随时感知它在干活。 |
+| **电脑手机体验一致** | 手机端和电脑端 Claude Code 行为完全相同——同样的编排逻辑、同样的输出效果。不是两个割裂的 AI。 |
+| **文件双向收发** | 发图片、Word、PDF 给 Claude 分析；Claude 生成的文件也会直接推送到微信，不用回到电脑前查看。 |
+| **超时安抚** | 任务超过 5 分钟没响应？它会自动发一条消息告诉你还在干，不会让你对着空白聊天框干等。 |
 
-## Installation
+---
 
-Clone into your Claude Code skills directory:
+## 快速安装
+
+**方式一：skills CLI（推荐）**
+
+```bash
+npx skills add Wechat-ggGitHub/wechat-claude-code
+```
+
+首次在对话中触发时，会自动克隆项目源码并安装依赖。
+
+**方式二：手动克隆**
 
 ```bash
 git clone https://github.com/Wechat-ggGitHub/wechat-claude-code.git ~/.claude/skills/wechat-claude-code
-cd ~/.claude/skills/wechat-claude-code
-npm install
+cd ~/.claude/skills/wechat-claude-code && npm install
 ```
 
-`postinstall` automatically compiles TypeScript via `tsc`.
+## 快速开始
 
-## Quick Start
-
-### 1. Setup (first time only)
-
-Scan QR code to bind your WeChat account:
+### 1. 扫码绑定
 
 ```bash
 cd ~/.claude/skills/wechat-claude-code
 npm run setup
 ```
 
-A QR code image will open — scan it with WeChat. Then configure your working directory.
+弹出二维码，用微信扫码。
 
-### 2. Start the daemon
+### 2. 启动服务
 
 ```bash
 npm run daemon -- start
 ```
 
-- **macOS**: registers a launchd agent for auto-start and auto-restart
-- **Linux**: uses systemd user service (falls back to nohup if systemd unavailable)
+macOS 下自动注册 launchd，开机自启、崩溃自动重启。
 
-### 3. Chat in WeChat
+### 3. 开始聊天
 
-Send any message in WeChat to start chatting with Claude Code.
+打开微信，给你新出现的那个"好友"发条消息试试。
 
-### 4. Manage the service
+### 管理服务
 
 ```bash
-npm run daemon -- status   # Check if running
-npm run daemon -- stop     # Stop the daemon
-npm run daemon -- restart  # Restart (after code updates)
-npm run daemon -- logs     # View recent logs
+npm run daemon -- status   # 查看运行状态
+npm run daemon -- stop     # 停止服务
+npm run daemon -- restart  # 重启服务（更新代码后使用）
+npm run daemon -- logs     # 查看日志
 ```
 
-## WeChat Commands
+---
 
-| Command | Description |
-|---------|-------------|
-| `/help` | Show available commands |
-| `/clear` | Clear current session (start fresh) |
-| `/reset` | Full reset including working directory |
-| `/stop` | Stop current query and discard queued messages |
-| `/model <name>` | Switch Claude model |
-| `/prompt [text]` | View or set a system prompt appended to every query |
-| `/status` | View current session state |
-| `/cwd [path]` | View or switch working directory |
-| `/skills` | List installed Claude Code skills |
-| `/history [n]` | View last N chat messages |
-| `/compact` | Start a new CLI session (clear token context) |
-| `/undo [n]` | Remove last N messages from history |
-| `/version` | Show version info |
-| `/<skill> [args]` | Trigger any installed skill |
+## 微信端命令
 
-## How It Works
+直接在微信聊天中发送即可：
+
+| 命令 | 说明 |
+|------|------|
+| `/help` | 显示帮助 |
+| `/clear` | 清除当前会话，开始新对话 |
+| `/stop` | 停止当前任务 |
+| `/model <名称>` | 切换 Claude 模型 |
+| `/prompt <内容>` | 设置系统提示词（如"用中文回答"） |
+| `/cwd <路径>` | 切换工作目录 |
+| `/skills` | 查看已安装的 Skill |
+| `/status` | 查看当前会话状态 |
+| `/history [数量]` | 查看最近对话记录 |
+| `/compact` | 压缩上下文，开始新 CLI 会话 |
+| `/reset` | 完全重置（包括工作目录等设置） |
+| `/undo [数量]` | 撤销最近几条对话 |
+| `/<skill> [参数]` | 触发任意已安装的 Skill |
+
+---
+
+## 工作原理
 
 ```
-WeChat (phone) ←→ ilink bot API ←→ Node.js daemon ←→ Claude Code CLI (local)
+微信（手机） ←→ ilink Bot API ←→ Node.js 守护进程 ←→ Claude Code CLI（本地）
 ```
 
-- The daemon long-polls WeChat's ilink bot API for new messages
-- Messages are forwarded to Claude Code by spawning the `claude` CLI with `--output-format stream-json`
-- Tool calls run silently in the background while Claude works
-- Claude's text output is streamed to WeChat in real-time; tool calls run silently
-- Responses are sent back to WeChat with automatic rate-limit retry
-- Platform-native service management keeps the daemon running (launchd on macOS, systemd/nohup on Linux)
+守护进程通过长轮询监听微信消息，转发给本地 `claude` CLI 处理，回复实时流式推送回微信。全程跑在你自己电脑上。
 
-## Data
+---
 
-All data is stored in `~/.wechat-claude-code/`:
+## 后续计划
+
+- **消息队列优化** — 连续发多条指令时，回复容易串。正在研究更好的队列策略，也欢迎讨论。
+- **电脑休眠不中断** — 利用 macOS 的 `caffeinate` 命令阻止系统睡眠，合上盖子也能响应微信消息。
+- **接续电脑会话** — 在电脑上聊了很久，出门想接着聊。计划支持从当前电脑端的 Claude Code 会话直接续聊，工作空间和上下文保持一致。
+
+---
+
+## 前置条件
+
+- Node.js >= 18
+- macOS 或 Linux
+- 个人微信账号
+- 已安装 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI 并完成认证
+
+> **提示：** Claude Code 支持第三方 API 提供商（OpenRouter、AWS Bedrock 等），设置 `ANTHROPIC_BASE_URL` 和 `ANTHROPIC_API_KEY` 即可。
+
+## 数据目录
+
+所有数据存储在 `~/.wechat-claude-code/`：
 
 ```
 ~/.wechat-claude-code/
-├── accounts/       # WeChat account credentials (one JSON per account)
-├── config.json     # Global config (working directory, model, system prompt)
-├── sessions/       # Session data (one JSON per account)
-├── get_updates_buf # Message polling sync buffer
-└── logs/           # Rotating logs (daily, 30-day retention)
-```
-
-## Development
-
-```bash
-npm run dev    # Watch mode — auto-compile on TypeScript changes
-npm run build  # Compile TypeScript
+├── accounts/       # 微信账号凭证
+├── config.json     # 全局配置
+├── sessions/       # 会话数据
+└── logs/           # 运行日志（每日轮转，保留 30 天）
 ```
 
 ## License
