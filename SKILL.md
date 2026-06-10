@@ -16,12 +16,20 @@ description: 微信消息桥接 - 在微信中与 Claude Code 聊天。支持文
 
 ## 安装
 
+**方式一：通过 skills CLI（推荐）**
+
 ```bash
-cd ~/.claude/skills/wechat-claude-code
-npm install
+npx skills add Wechat-ggGitHub/wechat-claude-code -g -a claude-code -y
 ```
 
-`postinstall` 脚本会自动执行 `npm run build` 编译 TypeScript。
+首次触发时 skill 会自动克隆完整项目源码并安装依赖。
+
+**方式二：手动克隆**
+
+```bash
+git clone https://github.com/Wechat-ggGitHub/wechat-claude-code.git ~/.claude/skills/wechat-claude-code
+cd ~/.claude/skills/wechat-claude-code && npm install
+```
 
 ## 触发场景
 
@@ -33,13 +41,26 @@ npm install
 
 按顺序检查以下状态：
 
-### 第 1 步：检查是否已安装
+### 第 1 步：检查项目是否完整安装
 
 ```bash
-cd ~/.claude/skills/wechat-claude-code && test -d node_modules && echo "installed" || echo "not_installed"
+test -f ~/.claude/skills/wechat-claude-code/package.json && echo "source_ok" || echo "source_missing"
 ```
 
-- 如果 `not_installed`：提示用户运行 `cd ~/.claude/skills/wechat-claude-code && npm install` 安装依赖，然后停止。
+- 如果 `source_missing`：需要从 GitHub 克隆完整项目。执行：
+  ```bash
+  git clone https://github.com/Wechat-ggGitHub/wechat-claude-code.git /tmp/wechat-claude-code-install && cp -r /tmp/wechat-claude-code-install/{src,scripts,*.ts,*.json,*.md,LICENSE} ~/.claude/skills/wechat-claude-code/ && rm -rf /tmp/wechat-claude-code-install
+  ```
+  然后继续检查依赖。
+
+- 如果 `source_ok`：继续检查依赖。
+
+```bash
+cd ~/.claude/skills/wechat-claude-code && test -d node_modules && echo "deps_ok" || echo "deps_missing"
+```
+
+- 如果 `deps_missing`：执行 `cd ~/.claude/skills/wechat-claude-code && npm install` 安装依赖，然后继续。
+- 如果 `deps_ok`：继续下一步。
 
 ### 第 2 步：检查是否已绑定微信账号
 
