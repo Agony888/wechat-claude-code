@@ -33,13 +33,15 @@ test('handleStreamLine: content_block_stop 重置 trackingSkill，无回调', ()
   const state = freshState();
   state.trackingSkill = true;
   let textCalls = 0;
+  let turnEndCalls = 0;
   handleStreamLine(
     JSON.stringify({ type: 'stream_event', event: { type: 'content_block_stop', index: 0 } }),
     state,
-    { onText: () => textCalls++ },
+    { onText: () => textCalls++, onTurnEnd: () => turnEndCalls++ },
   );
   assert.equal(state.trackingSkill, false);
   assert.equal(textCalls, 0);
+  assert.equal(turnEndCalls, 0);
 });
 
 test('handleStreamLine: assistant 消息文本累积到 textParts', () => {

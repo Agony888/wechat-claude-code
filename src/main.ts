@@ -493,26 +493,34 @@ async function sendToClaude(
 
     let anySent = false;
     let lastSentTime = Date.now();
-    let pendingRetry = '';   // sendText 失败时未发出的 chunks，下一次 flush 优先重试
+    let pendingRetry: { text: string; role: 'interstitial' | 'final' } | null = null;
 
     // Serial promise chain — each emit appends to the chain, no flags needed
     let flushChain: Promise<void> = Promise.resolve();
 
-    /** 把一段文本切分后串行发到微信。失败时把未发的 chunks 攒到 pendingRetry，下次重试。 */
     function emitText(text: string, role: 'interstitial' | 'final'): void {
       if (!text.trim()) return;
+
+      // 若上一次发送失败留下了 pendingRetry，先用它原本的 role 单独补发，
+      // 不要和当前 role 的文本合并（避免 interstitial 内容混进 final 答案）。
+      if (pendingRetry) {
+        const stuck = pendingRetry;
+        pendingRetry = null;
+        scheduleSend(stuck.text, stuck.role);
+      }
+
+      scheduleSend(text, role);
+    }
+
+    function scheduleSend(text: string, role: 'interstitial' | 'final'): void {
+      if (!text.trim()) return;
       flushChain = flushChain.then(async () => {
-        const combined = pendingRetry ? pendingRetry + '\n\n' + text : text;
-        pendingRetry = '';
-        if (!combined.trim()) return;
-        const chunks = splitMessage(combined);
+        const chunks = splitMessage(text);
         for (let i = 0; i < chunks.length; i++) {
           try {
             await sender.sendText(fromUserId, contextToken, chunks[i]);
           } catch (err) {
-            // Rate-limit exhaustion etc.: put the unsent chunks back so the
-            // next emit retries them. Content is never silently dropped.
-            pendingRetry = chunks.slice(i).join('\n\n');
+            pendingRetry = { text: chunks.slice(i).join('\n\n'), role };
             logger.warn('emitText send failed, content retained for retry', {
               role,
               error: err instanceof Error ? err.message : String(err),
@@ -585,6 +593,51 @@ async function sendToClaude(
     clearInterval(flushTimer);
     router.drain();
     await flushChain;
+
+    // 兜底重试：drain() 的最后一次发送若失败，pendingRetry 会卡住没有下一个 emit 接力。
+    // 这里做有上限的终态重试，避免静默丢内容（commit d6d7d62 的 "never silently drop" 保证）。
+    const MAX_TERMINAL_ATTEMPTS = 3;
+    let terminalAttempt = 0;
+    while (pendingRetry && terminalAttempt < MAX_TERMINAL_ATTEMPTS) {
+      const stuck: { text: string; role: 'interstitial' | 'final' } = pendingRetry;
+      pendingRetry = null;
+      terminalAttempt++;
+      const delayMs = terminalAttempt * 5_000;  // 5s, 10s, 15s
+      logger.warn(`terminal retry ${terminalAttempt}/${MAX_TERMINAL_ATTEMPTS} for stranded content`, {
+        role: stuck.role,
+        delayMs,
+        textLength: stuck.text.length,
+      });
+      await new Promise(r => setTimeout(r, delayMs));
+
+      const chunks = splitMessage(stuck.text);
+      let failed = false;
+      for (let i = 0; i < chunks.length; i++) {
+        try {
+          await sender.sendText(fromUserId, contextToken, chunks[i]);
+          anySent = true;
+          lastSentTime = Date.now();
+        } catch (err) {
+          pendingRetry = { text: chunks.slice(i).join('\n\n'), role: stuck.role };
+          logger.warn('terminal retry failed', {
+            attempt: terminalAttempt,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          failed = true;
+          break;
+        }
+      }
+      if (!failed) break;
+    }
+
+    if (pendingRetry) {
+      logger.error('content dropped after terminal retries', {
+        role: pendingRetry.role,
+        textLength: pendingRetry.text.length,
+      });
+      await sender.sendText(fromUserId, contextToken, '部分内容因限频未能推送，请稍后重试。').catch(() => {});
+      pendingRetry = null;
+    }
 
     // Send result back to WeChat
     if (result.text) {
