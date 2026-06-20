@@ -116,7 +116,7 @@ export function handleStreamLine(
       } else if (evt?.type === 'content_block_delta' && evt.delta?.type === 'text_delta') {
         const delta: string = evt.delta.text;
         if (delta && callbacks.onText) {
-          callbacks.onText(delta);
+          Promise.resolve(callbacks.onText(delta)).catch(() => {});
         }
       } else if (evt?.type === 'content_block_delta' && evt.delta?.type === 'input_json_delta' && state.trackingSkill) {
         state.skillInputAccum += evt.delta.partial_json ?? '';
@@ -124,7 +124,7 @@ export function handleStreamLine(
           const parsed = JSON.parse(state.skillInputAccum);
           if (parsed.skill) {
             const msg = `\n正在调用 ${parsed.skill} 技能\n\n`;
-            if (callbacks.onText) callbacks.onText(msg);
+            if (callbacks.onText) Promise.resolve(callbacks.onText(msg)).catch(() => {});
             state.trackingSkill = false;
           }
         } catch {
@@ -132,7 +132,7 @@ export function handleStreamLine(
         }
       } else if (evt?.type === 'content_block_stop') {
         state.trackingSkill = false;
-        if (callbacks.onBlockEnd) callbacks.onBlockEnd();
+        if (callbacks.onBlockEnd) Promise.resolve(callbacks.onBlockEnd()).catch(() => {});
       }
       break;
     }
