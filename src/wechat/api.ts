@@ -20,11 +20,25 @@ export class WeChatApi {
   private readonly uin: string;
   private readonly nextSendTime = new Map<string, number>();
   private static readonly MIN_SEND_INTERVAL = 2500;
-  // Cooldown applied after a rate-limit (ret:-2). Observed WeChat cooldown can
-  // last ~2-3 minutes under sustained sending; pushing nextSendTime this far
-  // out makes subsequent sends queue for the cooldown instead of each one
-  // independently hitting the wall and exhausting its own retries.
-  private static readonly RATE_LIMIT_COOLDOWN_MS = 60_000;
+  // Cooldown applied after a rate-limit (ret:-2). Aligned with the circuit
+  // breaker window so they don't fight each other.
+  private static readonly RATE_LIMIT_COOLDOWN_MS = 30_000;
+
+  // ── Circuit breaker ────────────────────────────────────────────────────
+  // Borrowed from Hermes WeChat adapter: trip after the first genuine
+  // rate-limit in a 30s window, stay open 30s. While open, all sends fail
+  // fast without hitting the API — breaking the 14-minute "head-banging"
+  // loop we observed in production logs.
+  private static readonly CIRCUIT_THRESHOLD = 1;
+  private static readonly CIRCUIT_WINDOW_MS = 30_000;
+  private static readonly CIRCUIT_OPEN_MS = 30_000;
+  private readonly _rateLimitEvents: number[] = [];
+  private _circuitUntil = 0;
+
+  // ret:-2 + errmsg="unknown error" is a stale-session signal (same family
+  // as errcode:-14), not a real rate-limit. Pause that user 10 minutes
+  // instead of cycling through the rate-limit path.
+  private static readonly STALE_SESSION_PAUSE_MS = 10 * 60 * 1000;
 
   constructor(token: string, baseUrl: string = 'https://ilinkai.weixin.qq.com') {
     if (baseUrl) {
@@ -104,6 +118,14 @@ export class WeChatApi {
 
   /** Send a message to a user. Per-user rate limited, retries on rate-limit (ret: -2). */
   async sendMessage(req: SendMessageReq): Promise<void> {
+    // Circuit breaker: fail fast without calling the API while open.
+    // This is what breaks the 14-minute head-banging loop.
+    if (this._isCircuitOpen()) {
+      const remainingSec = Math.ceil((this._circuitUntil - Date.now()) / 1000);
+      logger.warn('sendMessage rejected by circuit breaker', { remainingSec });
+      throw new Error(`circuit breaker open, ${remainingSec}s remaining`);
+    }
+
     const userId = req.msg?.to_user_id;
     if (userId) {
       const now = Date.now();
@@ -120,11 +142,30 @@ export class WeChatApi {
     const MAX_RETRIES = 2;
     let delay = 3_000;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      const res = await this.request<{ ret?: number }>('ilink/bot/sendmessage', req);
+      // Re-check the circuit on each retry — a prior attempt may have just tripped it.
+      if (this._isCircuitOpen()) {
+        const remainingSec = Math.ceil((this._circuitUntil - Date.now()) / 1000);
+        logger.warn('sendMessage aborted mid-retry by circuit breaker', { attempt, remainingSec });
+        throw new Error(`circuit breaker open during retry, ${remainingSec}s remaining`);
+      }
+
+      const res = await this.request<{ ret?: number; errmsg?: string }>('ilink/bot/sendmessage', req);
       if (res.ret === -2) {
+        // Distinguish stale-session (ret:-2 + errmsg "unknown error") from a real rate-limit.
+        // Hermes WeChat adapter established this pattern: the stale-session case behaves
+        // like errcode:-14 and is fixed by re-login, not by retry.
+        const errmsg = (res.errmsg ?? '').toLowerCase();
+        if (errmsg === 'unknown error') {
+          logger.warn('sendMessage stale session detected (ret:-2 + unknown error)', { userId });
+          if (userId) {
+            this.nextSendTime.set(userId, Date.now() + WeChatApi.STALE_SESSION_PAUSE_MS);
+          }
+          throw new Error('stale session — user must send a message to refresh context_token');
+        }
+
+        // Real rate-limit: trip the circuit breaker so subsequent sends fail fast.
+        this._tripCircuit();
         if (userId) {
-          // Push the per-user send clock past the observed cooldown window so
-          // later sends wait it out instead of retrying into the wall.
           this.nextSendTime.set(userId, Date.now() + WeChatApi.RATE_LIMIT_COOLDOWN_MS);
         }
         if (attempt === MAX_RETRIES) {
@@ -137,6 +178,39 @@ export class WeChatApi {
         continue;
       }
       return;
+    }
+  }
+
+  // ── Circuit breaker helpers ────────────────────────────────────────────
+
+  /** True while the breaker is open (sends should fail fast). */
+  private _isCircuitOpen(): boolean {
+    if (this._circuitUntil === 0) return false;
+    if (Date.now() >= this._circuitUntil) {
+      this._circuitUntil = 0;
+      this._rateLimitEvents.length = 0;
+      return false;
+    }
+    return true;
+  }
+
+  /** Record a rate-limit event and open the breaker if threshold is met. */
+  private _tripCircuit(): void {
+    const now = Date.now();
+    const windowStart = now - WeChatApi.CIRCUIT_WINDOW_MS;
+    while (this._rateLimitEvents.length > 0 && this._rateLimitEvents[0] < windowStart) {
+      this._rateLimitEvents.shift();
+    }
+    this._rateLimitEvents.push(now);
+    if (this._rateLimitEvents.length >= WeChatApi.CIRCUIT_THRESHOLD) {
+      const openUntil = Math.max(this._circuitUntil, now + WeChatApi.CIRCUIT_OPEN_MS);
+      if (openUntil > this._circuitUntil) {
+        logger.warn('Circuit breaker tripped', {
+          events: this._rateLimitEvents.length,
+          openMs: WeChatApi.CIRCUIT_OPEN_MS,
+        });
+      }
+      this._circuitUntil = openUntil;
     }
   }
 

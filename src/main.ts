@@ -19,6 +19,7 @@ import { loadConfig, saveConfig } from './config.js';
 import { logger } from './logger.js';
 import { DATA_DIR } from './constants.js';
 import { MessageType, type WeixinMessage } from './wechat/types.js';
+import { loadPendingQueue, savePendingQueue, type PendingItem } from './pending-queue.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -358,6 +359,10 @@ async function handleMessage(
   const fromUserId = msg.from_user_id;
   sharedCtx.lastContextToken = contextToken;
 
+  // Flush any pending messages from prior rate-limit windows. User's new
+  // message brings a fresh context_token, which resets the iLink 11-msg quota.
+  await flushPending(account.accountId, fromUserId, contextToken, sender);
+
   // Extract text from items
   const userText = extractTextFromItems(msg.item_list);
   const imageItem = extractFirstImageUrl(msg.item_list);
@@ -425,6 +430,51 @@ async function handleMessage(
 
 function extractTextFromItems(items: NonNullable<WeixinMessage['item_list']>): string {
   return items.map((item) => extractText(item)).filter(Boolean).join('\n');
+}
+
+/**
+ * Drain the pending message queue (messages that couldn't be delivered in a
+ * prior rate-limit window). Called whenever a fresh user message arrives with
+ * a new context_token. Each flush attempt stops at the first failure —
+ * remaining items stay queued for the next user message.
+ */
+async function flushPending(
+  accountId: string,
+  toUserId: string,
+  contextToken: string,
+  sender: ReturnType<typeof createSender>,
+): Promise<void> {
+  const queue = loadPendingQueue(accountId);
+  if (queue.length === 0) return;
+
+  logger.info('Flushing pending queue', { accountId, pending: queue.length });
+  const stillPending: PendingItem[] = [];
+
+  for (const item of queue) {
+    try {
+      const chunks = splitMessage(item.text);
+      for (const chunk of chunks) {
+        await sender.sendText(toUserId, contextToken, chunk);
+      }
+    } catch (err) {
+      logger.warn('Flush stopped at rate-limit, keeping remaining items queued', {
+        accountId,
+        flushed: queue.length - stillPending.length - 1,
+        remaining: stillPending.length + 1,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      stillPending.push(item);
+    }
+  }
+
+  savePendingQueue(accountId, stillPending);
+
+  if (stillPending.length > 0 && stillPending.length === queue.length) {
+    // Nothing got flushed this round — nudge the user.
+    await sender
+      .sendText(toUserId, contextToken, `⏳ 还有 ${stillPending.length} 条暂存消息未能推送，再发任意消息我会继续补发。`)
+      .catch(() => {});
+  }
 }
 
 async function sendToClaude(
@@ -631,11 +681,24 @@ async function sendToClaude(
     }
 
     if (pendingRetry) {
-      logger.error('content dropped after terminal retries', {
+      // Park the stranded content to the pending queue. It will be flushed
+      // automatically when the user's next message brings a fresh context_token
+      // (which resets the iLink 11-msg quota).
+      const queue = loadPendingQueue(account.accountId);
+      queue.push({
+        text: pendingRetry.text,
+        role: pendingRetry.role,
+        queuedAt: Date.now(),
+      });
+      savePendingQueue(account.accountId, queue);
+      logger.warn('content parked to pending queue', {
         role: pendingRetry.role,
         textLength: pendingRetry.text.length,
+        queueSize: queue.length,
       });
-      await sender.sendText(fromUserId, contextToken, '部分内容因限频未能推送，请稍后重试。').catch(() => {});
+      await sender
+        .sendText(fromUserId, contextToken, '⏳ 部分内容因微信单次推送上限暂存，下次你回复任意消息时自动补发。')
+        .catch(() => {});
       pendingRetry = null;
     }
 
