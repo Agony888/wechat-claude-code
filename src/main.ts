@@ -15,6 +15,7 @@ import { createSessionStore, type Session } from './session.js';
 import { routeCommand, type CommandContext, type CommandResult } from './commands/router.js';
 import { claudeQuery, type QueryOptions } from './claude/provider.js';
 import { TurnRouter } from './claude/turn-router.js';
+import { filterToolNoise } from './claude/tool-noise-filter.js';
 import { loadConfig, saveConfig } from './config.js';
 import { logger } from './logger.js';
 import { DATA_DIR } from './constants.js';
@@ -584,7 +585,7 @@ async function sendToClaude(
       });
     }
 
-    const router = new TurnRouter((msg) => emitText(msg.text, msg.role));
+    const router = new TurnRouter((msg) => emitText(filterToolNoise(msg.text), msg.role));
 
     // Safety net: send keepalive if nothing was sent for 5 minutes
     const SILENCE_WARNING_MS = 5 * 60 * 1000;
