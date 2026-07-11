@@ -1,5 +1,5 @@
 import type { CommandContext, CommandResult } from './router.js';
-import { scanAllSkills, formatSkillList, findSkill, type SkillInfo } from '../claude/skill-scanner.js';
+import { scanAllSkills, findSkill, type SkillInfo } from '../codex/skill-scanner.js';
 import { loadConfig, saveConfig } from '../config.js';
 import { DEFAULT_WORKING_DIR } from '../constants.js';
 import { readFileSync, existsSync, statSync } from 'node:fs';
@@ -15,7 +15,7 @@ const HELP_TEXT = `可用命令：
   /clear            清除当前会话
   /reset            完全重置（包括工作目录等设置）
   /status           查看当前会话状态
-  /compact          压缩上下文（开始新 SDK 会话，保留历史）
+  /compact          开始新 Codex 线程，保留本地历史
   /history [数量]   查看对话记录（默认最近20条）
   /undo [数量]      撤销最近对话（默认1条）
 
@@ -24,7 +24,7 @@ const HELP_TEXT = `可用命令：
 
 配置：
   /cwd [路径]       查看或切换工作目录
-  /model [名称]     查看或切换 Claude 模型
+  /model [名称]     查看或切换 Codex 模型
   /prompt [内容]    查看或设置系统提示词（全局生效）
 
 其他：
@@ -32,7 +32,7 @@ const HELP_TEXT = `可用命令：
   /version          查看版本信息
   /<skill> [参数]   触发已安装的 skill
 
-直接输入文字即可与 Claude Code 对话`;
+直接输入文字即可与 Codex 对话`;
 
 // 缓存 skill 列表，避免每次命令都扫描文件系统
 let cachedSkills: SkillInfo[] | null = null;
@@ -73,7 +73,7 @@ export function handleCwd(ctx: CommandContext, args: string): CommandResult {
 
 export function handleModel(ctx: CommandContext, args: string): CommandResult {
   if (!args) {
-    return { reply: '用法: /model <模型名称>\n例: /model claude-sonnet-4-6', handled: true };
+    return { reply: '用法: /model <模型名称>\n例: /model gpt-5.4', handled: true };
   }
   ctx.updateSession({ model: args });
   return { reply: `✅ 模型已切换为: ${args}`, handled: true };
@@ -86,7 +86,7 @@ export function handleStatus(ctx: CommandContext): CommandResult {
     '',
     `工作目录: ${s.workingDirectory}`,
     `模型: ${s.model ?? '默认'}`,
-    `会话ID: ${s.sdkSessionId ?? '无'}`,
+    `Codex 线程ID: ${s.codexThreadId ?? '无'}`,
     `状态: ${s.state}`,
   ];
   return { reply: lines.join('\n'), handled: true };
@@ -130,18 +130,18 @@ export function handleReset(ctx: CommandContext): CommandResult {
   return { reply: '✅ 会话已完全重置，所有设置恢复默认。', handled: true };
 }
 
-/** 压缩上下文 — 清除 SDK 会话 ID，开始新上下文但保留聊天历史 */
+/** Start a fresh Codex thread while retaining the local chat transcript. */
 export function handleCompact(ctx: CommandContext): CommandResult {
-  const currentSessionId = ctx.session.sdkSessionId;
+  const currentSessionId = ctx.session.codexThreadId;
   if (!currentSessionId) {
-    return { reply: 'ℹ️ 当前没有活动的 SDK 会话，无需压缩。', handled: true };
+    return { reply: 'ℹ️ 当前没有活动的 Codex 线程，无需切换。', handled: true };
   }
   ctx.updateSession({
-    previousSdkSessionId: currentSessionId,
-    sdkSessionId: undefined,
+    previousCodexThreadId: currentSessionId,
+    codexThreadId: undefined,
   });
   return {
-    reply: '✅ 上下文已压缩\n\n下次消息将开始新的 SDK 会话（token 清零）\n聊天历史已保留，可用 /history 查看',
+    reply: '✅ 已结束当前上下文\n\n下次消息将开始新的 Codex 线程\n本地聊天历史已保留，可用 /history 查看',
     handled: true,
   };
 }
@@ -168,9 +168,9 @@ export function handleVersion(): CommandResult {
     const __dirname = fileURLToPath(new URL('.', import.meta.url));
     const pkg = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf-8'));
     const version = pkg.version || 'unknown';
-    return { reply: `wechat-claude-code v${version}`, handled: true };
+    return { reply: `wechat-codex v${version}`, handled: true };
   } catch {
-    return { reply: 'wechat-claude-code (version unknown)', handled: true };
+    return { reply: 'wechat-codex (version unknown)', handled: true };
   }
 }
 
@@ -222,8 +222,8 @@ export function handleUnknown(cmd: string, args: string): CommandResult {
   const skill = findSkill(skills, cmd);
 
   if (skill) {
-    const prompt = args ? `Use the ${skill.name} skill: ${args}` : `Use the ${skill.name} skill`;
-    return { handled: true, claudePrompt: prompt };
+    const prompt = args ? `Use $${skill.name} to handle this request: ${args}` : `Use $${skill.name}.`;
+    return { handled: true, codexPrompt: prompt };
   }
 
   return {

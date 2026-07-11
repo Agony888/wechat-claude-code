@@ -15,8 +15,8 @@ export interface ChatMessage {
 }
 
 export interface Session {
-  sdkSessionId?: string;
-  previousSdkSessionId?: string;
+  codexThreadId?: string;
+  previousCodexThreadId?: string;
   workingDirectory: string;
   model?: string;
   state: SessionState;
@@ -66,8 +66,8 @@ export function createSessionStore() {
 
   function clear(accountId: string, currentSession?: Session): Session {
     const session: Session = {
-      sdkSessionId: undefined,          // explicitly clear so Object.assign removes it
-      previousSdkSessionId: undefined,
+      codexThreadId: undefined,
+      previousCodexThreadId: undefined,
       workingDirectory: currentSession?.workingDirectory ?? DEFAULT_WORKING_DIR,
       model: currentSession?.model,
       state: 'idle',
@@ -106,7 +106,7 @@ export function createSessionStore() {
     const lines: string[] = [];
     for (const msg of messages) {
       const time = new Date(msg.timestamp).toLocaleString('zh-CN');
-      const role = msg.role === 'user' ? '用户' : 'Claude';
+      const role = msg.role === 'user' ? '用户' : 'Codex';
       lines.push(`[${time}] ${role}:`);
       lines.push(msg.content);
       lines.push('');

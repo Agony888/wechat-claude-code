@@ -13,9 +13,8 @@ import { createSender } from './wechat/send.js';
 import { downloadImage, extractText, extractFirstImageUrl, extractFirstFileItem, downloadFile } from './wechat/media.js';
 import { createSessionStore, type Session } from './session.js';
 import { routeCommand, type CommandContext, type CommandResult } from './commands/router.js';
-import { claudeQuery, type QueryOptions } from './claude/provider.js';
-import { TurnRouter } from './claude/turn-router.js';
-import { filterToolNoise } from './claude/tool-noise-filter.js';
+import { codexQuery, type QueryOptions } from './codex/provider.js';
+import { TurnRouter } from './codex/turn-router.js';
 import { loadConfig, saveConfig } from './config.js';
 import { logger } from './logger.js';
 import { DATA_DIR } from './constants.js';
@@ -28,7 +27,7 @@ import { loadPendingQueue, savePendingQueue, type PendingItem } from './pending-
 
 const MAX_MESSAGE_LENGTH = 4000;
 
-// Extensions eligible for auto-push when detected in Claude's response
+// Extensions eligible for auto-push when detected in Codex's response
 const AUTO_PUSH_EXTENSIONS = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.ico',
   '.pdf', '.doc', '.docx', '.ppt', '.pptx', '.rtf',
@@ -37,7 +36,7 @@ const AUTO_PUSH_EXTENSIONS = new Set([
   '.mp3', '.wav', '.m4a', '.mp4', '.mov',
 ]);
 
-/** Extract local file paths from Claude's response text. */
+/** Extract local file paths from Codex's response text. */
 function extractFilePathsFromText(text: string, cwd: string): string[] {
   const paths: string[] = [];
   // Match absolute paths (macOS/Linux), tilde paths, and Windows paths with a file extension
@@ -228,7 +227,7 @@ async function runSetup(): Promise<void> {
     logger.warn('Failed to clean up QR image', { path: QR_PATH });
   }
 
-  const workingDir = await promptUser('请输入工作目录', join(homedir(), 'Documents', 'ClaudeCode'));
+  const workingDir = await promptUser('请输入工作目录', join(homedir(), 'Documents', 'Codex'));
   const config = loadConfig();
   config.workingDirectory = workingDir;
   saveConfig(config);
@@ -398,9 +397,9 @@ async function handleMessage(
       return;
     }
 
-    if (result.handled && result.claudePrompt) {
-      await sendToClaude(
-        result.claudePrompt, imageItem, fileItem, fromUserId, contextToken,
+    if (result.handled && result.codexPrompt) {
+      await sendToCodex(
+        result.codexPrompt, imageItem, fileItem, fromUserId, contextToken,
         account, session, sessionStore, sender, config, activeControllers,
       );
       return;
@@ -416,34 +415,7 @@ async function handleMessage(
     // Not handled, treat as normal message (fall through)
   }
 
-  // -- Normal message -> Claude --
-
-  if (!userText && !imageItem && !fileItem) {
-    await sender.sendText(fromUserId, contextToken, '暂不支持此类型消息，请发送文字、语音、图片或文件');
-    return;
-  }
-
-  await sendToClaude(
-    userText, imageItem, fileItem, fromUserId, contextToken,
-    account, session, sessionStore, sender, config, activeControllers,
-  );
-}
-
-function extractTextFromItems(items: NonNullable<WeixinMessage['item_list']>): string {
-  return items.map((item) => extractText(item)).filter(Boolean).join('\n');
-}
-
-/**
- * Drain the pending message queue (messages that couldn't be delivered in a
- * prior rate-limit window). Called whenever a fresh user message arrives with
- * a new context_token. Each flush attempt stops at the first failure —
- * remaining items stay queued for the next user message.
- */
-async function flushPending(
-  accountId: string,
-  toUserId: string,
-  contextToken: string,
-  sender: ReturnType<typeof createSender>,
+  // -- No�n��G����ƭy�e<typeof createSender>,
 ): Promise<void> {
   const queue = loadPendingQueue(accountId);
   if (queue.length === 0) return;
@@ -478,7 +450,7 @@ async function flushPending(
   }
 }
 
-async function sendToClaude(
+async function sendToCodex(
   userText: string,
   imageItem: ReturnType<typeof extractFirstImageUrl>,
   fileItem: ReturnType<typeof extractFirstFileItem>,
@@ -585,7 +557,7 @@ async function sendToClaude(
       });
     }
 
-    const router = new TurnRouter((msg) => emitText(filterToolNoise(msg.text), msg.role));
+    const router = new TurnRouter((msg) => emitText(msg.text, msg.role));
 
     // Safety net: send keepalive if nothing was sent for 5 minutes
     const SILENCE_WARNING_MS = 5 * 60 * 1000;
@@ -612,7 +584,7 @@ async function sendToClaude(
     const queryOptions: QueryOptions = {
       prompt,
       cwd: (session.workingDirectory || config.workingDirectory).replace(/^~/, homedir()),
-      resume: session.sdkSessionId,
+      resume: session.codexThreadId,
       model: session.model,
       systemPrompt: [
         '你正在通过微信与用户对话，不是在终端里。不要让用户去终端操作。如果用户需要文件，直接输出文件地址就行，会自动识别解析推送文件到用户的微信中。',
@@ -628,15 +600,15 @@ async function sendToClaude(
       },
     };
 
-    let result = await claudeQuery(queryOptions);
+    let result = await codexQuery(queryOptions);
 
     // If resume failed (e.g. corrupted session), retry without resume
     if (result.error && queryOptions.resume) {
       logger.warn('Resume failed, retrying without resume', { error: result.error, sessionId: queryOptions.resume });
       queryOptions.resume = undefined;
-      session.sdkSessionId = undefined;
+      session.codexThreadId = undefined;
       sessionStore.save(account.accountId, session);
-      const retryResult = await claudeQuery(queryOptions);
+      const retryResult = await codexQuery(queryOptions);
       Object.assign(result, retryResult);
     }
 
@@ -706,7 +678,7 @@ async function sendToClaude(
     // Send result back to WeChat
     if (result.text) {
       if (result.error) {
-        logger.warn('Claude query had error but returned text, using text', { error: result.error });
+        logger.warn('Codex query had error but returned text, using text', { error: result.error });
       }
       sessionStore.addChatMessage(session, 'assistant', result.text);
       // If nothing was streamed at all (e.g. streaming not supported), send full text now
@@ -717,18 +689,18 @@ async function sendToClaude(
         }
       }
     } else if (result.error) {
-      logger.error('Claude query error', { error: result.error });
-      await sender.sendText(fromUserId, contextToken, 'Claude 处理请求时出错，请稍后重试。');
+      logger.error('Codex query error', { error: result.error });
+      await sender.sendText(fromUserId, contextToken, `Codex 处理请求时出错：${result.error}`);
     } else if (!anySent) {
-      await sender.sendText(fromUserId, contextToken, 'Claude 无返回内容（可能因权限被拒而终止）');
+      await sender.sendText(fromUserId, contextToken, 'Codex 无返回内容（可能因权限或认证问题终止）');
     }
 
-    // Update session with new SDK session ID
-    session.sdkSessionId = result.sessionId || undefined;
+    // Update session with the Codex thread ID used by `codex exec resume`.
+    session.codexThreadId = result.sessionId || undefined;
     session.state = 'idle';
     sessionStore.save(account.accountId, session);
 
-    // Auto-push deliverable files mentioned in Claude's response
+    // Auto-push deliverable files mentioned in Codex's response
     if (result.text) {
       const cwd = (session.workingDirectory || config.workingDirectory).replace(/^~/, homedir());
       const detectedPaths = extractFilePathsFromText(result.text, cwd);
@@ -776,10 +748,10 @@ async function sendToClaude(
     const isAbort = err instanceof Error && (err.name === 'AbortError' || err.message.includes('abort'));
     if (isAbort) {
       // Query was cancelled by a new incoming message — exit silently
-      logger.info('Claude query aborted by new message');
+      logger.info('Codex query aborted by new message');
     } else {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      logger.error('Error in sendToClaude', { error: errorMsg });
+      logger.error('Error in sendToCodex', { error: errorMsg });
       await sender.sendText(fromUserId, contextToken, '处理消息时出错，请稍后重试。');
     }
     session.state = 'idle';

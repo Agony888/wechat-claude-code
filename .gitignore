@@ -1,7 +1,17 @@
 node_modules/
 dist/
-*.log
+coverage/
 .env
-.wechat-claude-code/
-.claude/
-CLAUDE.md
+.env.*
+!.env.example
+*.log
+*.pid
+.DS_Store
+Thumbs.db
+
+# Local WeChat bridge runtime data
+.wechat-codex/
+accounts/
+sessions/
+logs/
+qrcode.png

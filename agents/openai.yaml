@@ -1,0 +1,4 @@
+interface:
+  display_name: "WeChat Codex Bridge"
+  short_description: "Bridge personal WeChat messages to local Codex CLI"
+  default_prompt: "Use $wechat-codex to inspect and manage the local WeChat to Codex bridge."
